@@ -70,6 +70,10 @@ use pumpkin_util::text::TextComponent;
 use rand::RngExt;
 use std::sync::RwLock;
 
+// shortcut: attribute ranges are not extracted, use generated bounds when available.
+const MAX_HEALTH_MIN_VALUE: f64 = 1.0;
+const MAX_HEALTH_MAX_VALUE: f64 = 1024.0;
+
 /// Represents a living entity within the game world.
 ///
 /// This struct encapsulates the core properties and behaviors of living entities, including players, mobs, and other creatures.
@@ -814,6 +818,7 @@ impl LivingEntity {
 
         // Clamp current health to new max if needed and send metadata update
         let current_health = self.health.load();
+        let max_health = self.get_max_health();
         if current_health > max_health {
             self.set_health(max_health);
         }
@@ -891,8 +896,18 @@ impl LivingEntity {
             .attributes
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.get(&attribute.id)
-            .map_or(attribute.default_value, AttributeInstance::value)
+        let value = map
+            .get(&attribute.id)
+            .map_or(attribute.default_value, AttributeInstance::value);
+        if attribute.id == Attributes::MAX_HEALTH.id {
+            if value.is_nan() {
+                MAX_HEALTH_MIN_VALUE
+            } else {
+                value.clamp(MAX_HEALTH_MIN_VALUE, MAX_HEALTH_MAX_VALUE)
+            }
+        } else {
+            value
+        }
     }
 
     /// Returns the base attribute value for `attribute` for this entity's type.
@@ -3916,6 +3931,80 @@ pub(crate) const fn bypasses_armor_durability(damage_type: &DamageType) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arc_swap::ArcSwap;
+    use pumpkin_config::world::LevelConfig;
+    use pumpkin_data::dimension::Dimension;
+    use pumpkin_util::world_seed::Seed;
+    use pumpkin_world::{level::Level, world_info::LevelData};
+    use std::sync::Weak;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn max_health_uses_effective_attribute_range() -> std::io::Result<()> {
+        let directory = TempDir::new()?;
+        let level = Level::from_root_folder(
+            &LevelConfig::default(),
+            directory.path().to_path_buf(),
+            0,
+            Dimension::OVERWORLD,
+        );
+        let world = Arc::new(crate::world::World::load(
+            level.clone(),
+            Arc::new(ArcSwap::from_pointee(LevelData::default(Seed(0)))),
+            Dimension::OVERWORLD,
+            crate::block::registry::default_registry(),
+            Weak::new(),
+        ));
+        let living = LivingEntity::new(Entity::new(world, Vector3::default(), &EntityType::PLAYER));
+
+        // Vanilla Attributes.MAX_HEALTH and RangedAttribute.sanitizeValue.
+        for (base, expected) in [
+            (0.0, 1.0),
+            (-10.0, 1.0),
+            (0.5, 1.0),
+            (20.0, 20.0),
+            (2048.0, 1024.0),
+            (f32::NAN, 1.0),
+            (f32::NEG_INFINITY, 1.0),
+            (f32::INFINITY, 1024.0),
+        ] {
+            living.set_max_health(20.0);
+            living.set_health(20.0);
+            living.set_max_health(base);
+            assert_eq!(
+                living.get_attribute_value(&Attributes::MAX_HEALTH),
+                expected
+            );
+            assert_eq!(living.get_max_health(), expected as f32);
+            assert_eq!(living.health.load(), (expected as f32).min(20.0));
+            assert!(!living.dead.load(Relaxed));
+            if base.is_nan() {
+                assert!(living.get_attribute_base(&Attributes::MAX_HEALTH).is_nan());
+            } else {
+                assert_eq!(
+                    living.get_attribute_base(&Attributes::MAX_HEALTH),
+                    base as f64
+                );
+            }
+        }
+
+        living.set_max_health(20.0);
+        living.set_health(20.0);
+        living.update_attribute(&Attributes::MAX_HEALTH, |attribute| {
+            attribute.add_or_replace_modifier(Modifier {
+                id: "test:max_health".into(),
+                amount: 20.0,
+                operation: ModifierOperation::Add,
+            });
+        });
+        living.set_max_health(0.0);
+        assert_eq!(living.get_max_health(), 20.0);
+        assert_eq!(living.health.load(), 20.0);
+        living.set_health(100.0);
+        assert_eq!(living.health.load(), 20.0);
+        level.shutdown().await;
+        Ok(())
+    }
 
     // ── bypasses_armor_durability ─────────────────────────────────────
 
