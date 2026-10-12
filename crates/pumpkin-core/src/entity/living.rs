@@ -2007,6 +2007,12 @@ impl LivingEntity {
             .compare_exchange(false, true, Relaxed, Relaxed)
             .is_ok()
         {
+            if let Some(player) = dyn_self.get_player()
+                && player.is_sleeping()
+            {
+                player.wake_up();
+            }
+
             self.movement_input.store(Vector3::default());
             self.jumping.store(false, Relaxed);
 
@@ -3025,6 +3031,13 @@ impl LivingEntity {
             {
                 return false;
             }
+        }
+
+        // Vanilla parity: waking up sleeping entities upon taking damage
+        if let Some(player) = caller.get_player()
+            && player.is_sleeping()
+        {
+            player.wake_up();
         }
 
         // Vanilla parity: entities in FREEZE_HURTS_EXTRA_TYPES take 5x freezing damage.

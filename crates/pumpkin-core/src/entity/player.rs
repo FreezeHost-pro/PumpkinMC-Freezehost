@@ -2214,7 +2214,8 @@ impl Player {
         self.living_entity.get_block_speed_factor()
     }
 
-    fn is_sleeping(&self) -> bool {
+    #[must_use]
+    pub fn is_sleeping(&self) -> bool {
         // TODO: Track sleeping position state explicitly (vanilla checks sleepingPosition.isPresent()).
         self.sleeping_since.load().is_some()
     }
@@ -4390,8 +4391,18 @@ impl Player {
         {
             return false;
         }
-        self.living_entity
-            .damage_with_context(caller, amount, damage_type, position, source, cause)
+        let damaged = self.living_entity.damage_with_context(
+            caller,
+            amount,
+            damage_type,
+            position,
+            source,
+            cause,
+        );
+        if damaged && self.is_sleeping() {
+            self.wake_up();
+        }
+        damaged
     }
 
     pub fn damage_generic(&self, amount: f32) -> bool {
