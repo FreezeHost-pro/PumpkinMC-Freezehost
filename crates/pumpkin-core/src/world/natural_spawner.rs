@@ -188,10 +188,10 @@ struct PointCharge(BlockPos, f64);
 
 impl PointCharge {
     fn get_potential_change(&self, pos: &BlockPos) -> f64 {
-        let dx = self.0.0.x - pos.0.x;
-        let dy = self.0.0.y - pos.0.y;
-        let dz = self.0.0.z - pos.0.z;
-        let dist_sq = (dx * dx + dy * dy + dz * dz) as f64;
+        let dx = self.0.0.x as f64 - pos.0.x as f64;
+        let dy = self.0.0.y as f64 - pos.0.y as f64;
+        let dz = self.0.0.z as f64 - pos.0.z as f64;
+        let dist_sq = dx * dx + dy * dy + dz * dz;
         if dist_sq == 0.0 {
             f64::INFINITY
         } else {
@@ -1133,6 +1133,41 @@ fn is_burning_block(block: &Block) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn potential_change_matches_vanilla_at_large_distances() {
+        // Outputs from 26.3 PotentialCalculator.PointCharge.getPotentialChange.
+        for (charged_pos, queried_pos, expected) in [
+            (
+                BlockPos::new(46_341, 64, 0),
+                BlockPos::new(0, 64, 0),
+                2.1579163160052653e-5,
+            ),
+            (
+                BlockPos::new(40_000, 64, 40_000),
+                BlockPos::new(0, 64, 0),
+                1.767766952966369e-5,
+            ),
+            (
+                BlockPos::new(i32::MIN, 64, 0),
+                BlockPos::new(i32::MAX, 64, 0),
+                2.3283064370807974e-10,
+            ),
+        ] {
+            let change = PointCharge(charged_pos, 1.0).get_potential_change(&queried_pos);
+            assert!(
+                (change - expected).abs() <= f64::EPSILON * expected,
+                "wrong potential for {charged_pos:?} to {queried_pos:?}: {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn potential_change_at_same_position_is_positive_infinity() {
+        let pos = BlockPos::new(40_000, 64, 40_000);
+        let change = PointCharge(pos, 1.0).get_potential_change(&pos);
+        assert!(change.is_infinite() && change.is_sign_positive());
+    }
 
     #[test]
     fn vanilla_spawn_floor_predicates_are_preserved() {
