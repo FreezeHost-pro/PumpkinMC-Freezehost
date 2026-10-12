@@ -82,34 +82,9 @@ impl HopperMinecart {
             let Some(item) = entity.get_item_entity() else {
                 continue;
             };
-            let (backup, one) = {
-                let mut stack = item
-                    .get_item_stack()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if stack.is_empty() {
-                    continue;
-                }
-                (stack.clone(), stack.split(1))
-            };
-            if HopperBlockEntity::add_one_item(inventory.as_ref(), inventory.as_ref(), &one) {
-                let is_empty = {
-                    let stack = item
-                        .get_item_stack()
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    stack.is_empty()
-                };
-                if is_empty {
-                    item.get_entity().remove();
-                }
+            if HopperBlockEntity::add_item_entity(inventory.as_ref(), item) {
                 return true;
             }
-            let mut stack = item
-                .get_item_stack()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *stack = backup;
         }
         false
     }
@@ -147,10 +122,46 @@ impl HopperMinecart {
 #[cfg(test)]
 mod tests {
     use super::HopperMinecart;
+    use crate::block::entities::hopper::HopperBlockEntity;
+    use pumpkin_data::item::Item;
+    use pumpkin_data::item_stack::ItemStack;
     use pumpkin_inventory::Inventory;
 
     #[test]
     fn hopper_minecart_inventory_has_five_slots() {
         assert_eq!(HopperMinecart::new().inventory.size(), 5);
+    }
+
+    #[test]
+    fn hopper_minecart_absorbs_whole_stack() {
+        let cart = HopperMinecart::new();
+        let leftover = HopperBlockEntity::add_item(
+            None,
+            cart.inventory().as_ref(),
+            ItemStack::new(64, &Item::DIAMOND),
+        );
+        assert!(leftover.is_empty());
+        assert_eq!(cart.inventory().get_stack(0).item_count, 64);
+        assert!(cart.inventory().get_stack(1).is_empty());
+    }
+
+    #[test]
+    fn hopper_minecart_tops_up_and_returns_remainder() {
+        let cart = HopperMinecart::new();
+        cart.inventory()
+            .set_stack(0, ItemStack::new(60, &Item::DIAMOND));
+        for slot in 1..cart.inventory().size() {
+            cart.inventory()
+                .set_stack(slot, ItemStack::new(64, &Item::DIRT));
+        }
+
+        let leftover = HopperBlockEntity::add_item(
+            None,
+            cart.inventory().as_ref(),
+            ItemStack::new(10, &Item::DIAMOND),
+        );
+        assert_eq!(cart.inventory().get_stack(0).item_count, 64);
+        assert_eq!(leftover.get_item().id, Item::DIAMOND.id);
+        assert_eq!(leftover.item_count, 6);
     }
 }
