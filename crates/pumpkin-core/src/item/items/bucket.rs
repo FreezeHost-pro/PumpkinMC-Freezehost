@@ -258,17 +258,22 @@ pub(crate) fn try_place_filled_bucket(
     let target_pos = pos.offset(direction.to_offset());
     let (block, state) = world.get_block_and_state(&target_pos);
 
-    if block.is_waterloggable() {
-        if item.id == Item::LAVA_BUCKET.id {
-            return false;
-        }
+    if block.is_waterloggable() && item.id != Item::LAVA_BUCKET.id {
         let state_id = block.set_waterlogged(state.id, true).unwrap_or(state.id);
         world.set_block_state(&target_pos, state_id, BlockFlags::NOTIFY_ALL);
         world.schedule_fluid_tick(&Fluid::WATER, target_pos, 5, TickPriority::Normal);
         return true;
     }
 
-    if state.id == Block::AIR.default_state.id || state.is_liquid() {
+    if state.is_air() || state.is_liquid() || state.replaceable() || !state.is_solid() {
+        if !state.is_air()
+            && !state.is_liquid()
+            && world
+                .break_block(&target_pos, None, BlockFlags::NOTIFY_ALL)
+                .is_none()
+        {
+            return false;
+        }
         world.set_block_state(
             &target_pos,
             if item.id == Item::LAVA_BUCKET.id {
@@ -496,5 +501,94 @@ impl ItemBehaviour for MilkBucketItem {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arc_swap::ArcSwap;
+    use pumpkin_config::world::LevelConfig;
+    use pumpkin_data::dimension::Dimension;
+    use pumpkin_util::{math::vector2::Vector2, world_seed::Seed};
+    use pumpkin_world::{chunk::ChunkData, level::Level, world_info::LevelData};
+
+    #[tokio::test]
+    async fn filled_buckets_replace_non_solid_blocks_but_not_stone() -> Result<(), std::io::Error> {
+        let directory = tempfile::tempdir()?;
+        let level = Level::from_root_folder(
+            &LevelConfig::default(),
+            directory.path().to_path_buf(),
+            0,
+            Dimension::OVERWORLD,
+        );
+        level
+            .loaded_chunks
+            .insert(Vector2::new(0, 0), ChunkData::empty_sync(0, 0));
+        let world = Arc::new(World::load(
+            level.clone(),
+            Arc::new(ArcSwap::from_pointee(LevelData::default(Seed(0)))),
+            Dimension::OVERWORLD,
+            crate::block::registry::default_registry(),
+            std::sync::Weak::new(),
+        ));
+        let pos = BlockPos::new(8, 70, 8);
+        let target = pos.offset(BlockDirection::East.to_offset());
+        world.set_block_state(
+            &target.down(),
+            Block::STONE.default_state.id,
+            BlockFlags::FORCE_STATE,
+        );
+        world.set_block_state(
+            &target.offset(BlockDirection::South.to_offset()),
+            Block::STONE.default_state.id,
+            BlockFlags::FORCE_STATE,
+        );
+        let mut results = Vec::new();
+        for item in [&Item::WATER_BUCKET, &Item::LAVA_BUCKET] {
+            for block in [
+                &Block::SHORT_GRASS,
+                &Block::TORCH,
+                &Block::LADDER,
+                &Block::STONE,
+            ] {
+                world.set_block_state(&target, block.default_state.id, BlockFlags::FORCE_STATE);
+                let drops_before = world.entities.load().len();
+                let placed = try_place_filled_bucket(&world, item, pos, BlockDirection::East);
+                let expected = if block == &Block::LADDER && item == &Item::WATER_BUCKET {
+                    &Block::LADDER
+                } else if block == &Block::STONE {
+                    &Block::STONE
+                } else if item == &Item::LAVA_BUCKET {
+                    &Block::LAVA
+                } else {
+                    &Block::WATER
+                };
+                results.push((
+                    placed,
+                    world.get_block(&target) == expected,
+                    (block != &Block::SHORT_GRASS)
+                        .then(|| world.entities.load().len() - drops_before),
+                    world
+                        .get_block(&target)
+                        .is_waterlogged(world.get_block_state_id(&target)),
+                ));
+            }
+        }
+        level.shutdown().await;
+        assert_eq!(
+            results,
+            [
+                (true, true, None, false),
+                (true, true, Some(1), false),
+                (true, true, Some(0), true),
+                (false, true, Some(0), false),
+                (true, true, None, false),
+                (true, true, Some(1), false),
+                (true, true, Some(1), false),
+                (false, true, Some(0), false)
+            ]
+        );
+        Ok(())
     }
 }
