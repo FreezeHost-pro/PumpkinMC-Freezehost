@@ -532,59 +532,49 @@ fn compute_chest_props(
     block_pos: &BlockPos,
     face: BlockDirection,
 ) -> (ChestType, HorizontalFacing) {
-    let player_facing = player.get_entity().get_horizontal_facing();
-    let chest_facing = player_facing.opposite();
+    let mut facing_direction = player.get_entity().get_horizontal_facing().opposite();
+    let mut chest_type = ChestType::Single;
+    let secondary_use = player.get_entity().pose.load() == EntityPose::Crouching;
 
-    if player.get_entity().pose.load() == EntityPose::Crouching {
-        let Some(face) = face.to_horizontal_facing() else {
-            return (ChestType::Single, chest_facing);
-        };
-
-        let (clicked_block, clicked_block_state) =
-            world.get_block_and_state_id(&block_pos.offset(face.to_offset()));
-
-        if clicked_block == block {
-            let clicked_props = ChestLikeProperties::from_state_id(clicked_block_state);
-
-            if clicked_props.r#type != ChestType::Single {
-                return (ChestType::Single, chest_facing);
-            }
-
-            if clicked_props.facing.rotate_clockwise() == face {
-                return (ChestType::Left, clicked_props.facing);
-            } else if clicked_props.facing.rotate_counter_clockwise() == face {
-                return (ChestType::Right, clicked_props.facing);
+    let candidate_partner_facing = |direction: HorizontalFacing| -> Option<HorizontalFacing> {
+        let (neighbor_block, neighbor_state) =
+            world.get_block_and_state_id(&block_pos.offset(direction.to_offset()));
+        if neighbor_block == block {
+            let props = ChestLikeProperties::from_state_id(neighbor_state);
+            if props.r#type == ChestType::Single {
+                return Some(props.facing);
             }
         }
+        None
+    };
 
-        return (ChestType::Single, chest_facing);
+    if let Some(clicked_face) = face.to_horizontal_facing()
+        && secondary_use
+    {
+        let opposite_face = clicked_face.opposite();
+        if let Some(neighbor_facing) = candidate_partner_facing(opposite_face)
+            && neighbor_facing.to_axis() != clicked_face.to_axis()
+        {
+            facing_direction = neighbor_facing;
+            chest_type = if facing_direction.rotate_counter_clockwise() == opposite_face {
+                ChestType::Right
+            } else {
+                ChestType::Left
+            };
+        }
     }
 
-    if get_chest_properties_if_can_connect(
-        world,
-        block,
-        block_pos,
-        chest_facing,
-        chest_facing.rotate_clockwise(),
-        ChestType::Single,
-    )
-    .is_some()
-    {
-        (ChestType::Left, chest_facing)
-    } else if get_chest_properties_if_can_connect(
-        world,
-        block,
-        block_pos,
-        chest_facing,
-        chest_facing.rotate_counter_clockwise(),
-        ChestType::Single,
-    )
-    .is_some()
-    {
-        (ChestType::Right, chest_facing)
-    } else {
-        (ChestType::Single, chest_facing)
+    if chest_type == ChestType::Single && !secondary_use {
+        if candidate_partner_facing(facing_direction.rotate_clockwise()) == Some(facing_direction) {
+            chest_type = ChestType::Left;
+        } else if candidate_partner_facing(facing_direction.rotate_counter_clockwise())
+            == Some(facing_direction)
+        {
+            chest_type = ChestType::Right;
+        }
     }
+
+    (chest_type, facing_direction)
 }
 
 fn get_chest_properties_if_can_connect(
