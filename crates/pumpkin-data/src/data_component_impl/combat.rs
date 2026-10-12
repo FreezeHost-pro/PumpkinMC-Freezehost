@@ -515,6 +515,29 @@ pub struct AttackRangeImpl {
     pub mob_factor: f32,
 }
 impl AttackRangeImpl {
+    pub fn default_for(interaction_range: f64) -> Self {
+        let interaction_range = interaction_range as f32;
+        Self {
+            min_reach: 0.0,
+            max_reach: interaction_range,
+            min_creative_reach: 0.0,
+            max_creative_reach: interaction_range,
+            hitbox_margin: 0.0,
+            mob_factor: 1.0,
+        }
+    }
+
+    pub fn is_in_range(&self, distance: f64, creative: bool, extra_buffer: f64) -> bool {
+        let (min_reach, max_reach) = if creative {
+            (self.min_creative_reach, self.max_creative_reach)
+        } else {
+            (self.min_reach, self.max_reach)
+        };
+        let min_reach = f64::from(min_reach - self.hitbox_margin) - extra_buffer;
+        let max_reach = f64::from(max_reach + self.hitbox_margin) + extra_buffer;
+        distance >= min_reach && distance <= max_reach
+    }
+
     pub fn read_data(data: &NbtTag) -> Option<Self> {
         let compound = data.extract_compound()?;
         Some(Self {
@@ -562,6 +585,64 @@ impl Hash for AttackRangeImpl {
         for value in self.values() {
             value.to_bits().hash(state);
         }
+    }
+}
+
+#[cfg(test)]
+mod attack_range_tests {
+    use super::AttackRangeImpl;
+
+    #[test]
+    fn default_range_honors_attributes_and_server_tolerance() {
+        let range = AttackRangeImpl::default_for(3.0);
+        assert!(range.is_in_range(6.0, false, 3.0));
+        assert!(!range.is_in_range(6.001, false, 3.0));
+        assert!(!range.is_in_range(f64::NAN, false, 3.0));
+        assert!(!range.is_in_range(f64::INFINITY, false, 3.0));
+
+        let extended = AttackRangeImpl::default_for(8.0);
+        assert!(extended.is_in_range(11.0, false, 3.0));
+        assert!(!extended.is_in_range(11.001, false, 3.0));
+        assert!(extended.is_in_range(11.0, true, 3.0));
+    }
+
+    #[test]
+    fn weapon_range_honors_minimum_margin_and_creative_reach() {
+        let range = AttackRangeImpl {
+            min_reach: 4.0,
+            max_reach: 8.0,
+            min_creative_reach: 6.0,
+            max_creative_reach: 12.0,
+            hitbox_margin: 0.5,
+            mob_factor: 1.0,
+        };
+        assert!(!range.is_in_range(0.499, false, 3.0));
+        assert!(range.is_in_range(0.5, false, 3.0));
+        assert!(range.is_in_range(11.5, false, 3.0));
+        assert!(!range.is_in_range(11.501, false, 3.0));
+        assert!(!range.is_in_range(2.499, true, 3.0));
+        assert!(range.is_in_range(2.5, true, 3.0));
+        assert!(range.is_in_range(15.5, true, 3.0));
+        assert!(!range.is_in_range(15.501, true, 3.0));
+    }
+
+    #[test]
+    fn weapon_range_rounds_margin_before_server_tolerance() {
+        let range = AttackRangeImpl {
+            min_reach: 4.0,
+            max_reach: 8.0,
+            min_creative_reach: 0.0,
+            max_creative_reach: 5.0,
+            hitbox_margin: 0.3,
+            mob_factor: 1.0,
+        };
+        // Vanilla AttackRange.isInRange rounds the first operation to float.
+        assert!(!range.is_in_range(0.7, false, 3.0));
+        assert!(range.is_in_range(0.700_000_047_683_715_8, false, 3.0));
+        assert!(range.is_in_range(11.300_000_190_734_863, false, 3.0));
+        assert!(!range.is_in_range(11.300_000_2, false, 3.0));
+        assert!(range.is_in_range(8.300_000_190_734_863, true, 3.0));
+        assert!(!range.is_in_range(8.300_000_2, true, 3.0));
     }
 }
 

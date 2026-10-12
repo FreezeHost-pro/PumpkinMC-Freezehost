@@ -236,7 +236,9 @@ impl BedrockPlayer<'_> {
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::block_properties::HorizontalFacing;
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::data_component_impl::{AttributeModifiersImpl, EnchantmentsImpl, Operation};
+use pumpkin_data::data_component_impl::{
+    AttackRangeImpl, AttributeModifiersImpl, EnchantmentsImpl, Operation,
+};
 use pumpkin_data::data_component_impl::{EquipmentSlot, EquippableImpl, ToolImpl, WeaponImpl};
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
@@ -1327,6 +1329,12 @@ impl Player {
 
         let inventory = self.inventory();
         let item_stack = inventory.held_item();
+        if self.gamemode.load() == GameMode::Spectator
+            || victim_entity.is_removed()
+            || !self.is_within_attack_range(&item_stack, &victim_entity.bounding_box.load(), 3.0)
+        {
+            return;
+        }
         if !item_stack.is_empty() {
             self.increment_stat(
                 statistics::StatisticCategory::Used,
@@ -4235,6 +4243,29 @@ impl Player {
         } else {
             4.5
         }
+    }
+
+    #[must_use]
+    pub fn is_within_attack_range(
+        &self,
+        weapon: &ItemStack,
+        bounds: &BoundingBox,
+        extra_buffer: f64,
+    ) -> bool {
+        let range = weapon
+            .get_data_component::<AttackRangeImpl>()
+            .cloned()
+            .unwrap_or_else(|| {
+                AttackRangeImpl::default_for(
+                    self.living_entity
+                        .get_attribute_value(&Attributes::ENTITY_INTERACTION_RANGE),
+                )
+            });
+        range.is_in_range(
+            bounds.squared_magnitude(self.eye_position()).sqrt(),
+            self.gamemode.load() == GameMode::Creative,
+            extra_buffer,
+        )
     }
 
     pub fn can_interact_with_block_at(&self, position: &BlockPos, additional_range: f64) -> bool {
