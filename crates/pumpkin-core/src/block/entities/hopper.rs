@@ -449,17 +449,18 @@ impl HopperBlockEntity {
                         && let Some(hopper) = to.as_any().downcast_ref::<Self>()
                         && hopper.cooldown_time.load(Ordering::Relaxed) <= 8
                     {
-                        if let Some(from_hopper) = from.as_any().downcast_ref::<Self>() {
-                            if from_hopper.cooldown_time.load(Ordering::Relaxed)
-                                >= hopper.cooldown_time.load(Ordering::Relaxed)
-                            {
-                                hopper.cooldown_time.store(7, Ordering::Relaxed);
-                            } else {
-                                hopper.cooldown_time.store(8, Ordering::Relaxed);
-                            }
+                        let skip_tick_count = if let Some(from_hopper) =
+                            from.as_any().downcast_ref::<Self>()
+                            && hopper.ticked_game_time.load(Ordering::Relaxed)
+                                >= from_hopper.ticked_game_time.load(Ordering::Relaxed)
+                        {
+                            1
                         } else {
-                            hopper.cooldown_time.store(8, Ordering::Relaxed);
-                        }
+                            0
+                        };
+                        hopper
+                            .cooldown_time
+                            .store(8 - skip_tick_count, Ordering::Relaxed);
                     }
                     to.mark_dirty();
                     return true;
@@ -679,5 +680,30 @@ mod tests {
 
         assert_eq!(leftover.item_count, 1);
         assert_eq!(hopper.get_stack(0).item_count, max);
+    }
+
+    #[test]
+    fn hopper_to_hopper_transfer_cooldown_reflects_ticked_game_time() {
+        let from = HopperBlockEntity::new(BlockPos::new(0, 0, 0), FacingHopper::Down);
+        let to = HopperBlockEntity::new(BlockPos::new(0, -1, 0), FacingHopper::Down);
+
+        // Case 1: to has ticked on or after the same tick as from -> cooldown 7 (skip 1 tick)
+        to.ticked_game_time.store(100, Ordering::Relaxed);
+        from.ticked_game_time.store(100, Ordering::Relaxed);
+
+        let item = ItemStack::new(1, &Item::DIAMOND);
+        assert!(HopperBlockEntity::add_one_item(&from, &to, &item));
+        assert_eq!(to.cooldown_time.load(Ordering::Relaxed), 7);
+
+        // Clear to's inventory and reset cooldown
+        to.set_stack(0, ItemStack::EMPTY.clone());
+        to.cooldown_time.store(0, Ordering::Relaxed);
+
+        // Case 2: from ticked later (to has NOT ticked yet this game tick) -> cooldown 8
+        to.ticked_game_time.store(99, Ordering::Relaxed);
+        from.ticked_game_time.store(100, Ordering::Relaxed);
+
+        assert!(HopperBlockEntity::add_one_item(&from, &to, &item));
+        assert_eq!(to.cooldown_time.load(Ordering::Relaxed), 8);
     }
 }
