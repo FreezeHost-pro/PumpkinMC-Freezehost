@@ -380,6 +380,30 @@ const fn bedrock_inventory_slot(player_screen_slot: i16) -> Option<u32> {
     }
 }
 
+fn bedrock_system_message(text: &TextComponent, locale: Locale) -> SText<'static> {
+    match &*text.0.content {
+        pumpkin_util::text::TextContent::Translate {
+            translate,
+            bedrock_translate,
+            with,
+        } => {
+            let key = bedrock_translate.as_deref().unwrap_or(translate.as_ref());
+            let mut parameters = with
+                .iter()
+                .map(pumpkin_util::text::TextComponentBase::to_bedrock_string)
+                .collect::<Vec<_>>();
+            // Bedrock's indexed gamemode template takes the mode before the target.
+            if key == translation::bedrock::COMMANDS_GAMEMODE_SUCCESS_OTHER
+                && let [target, gamemode, ..] = parameters.as_mut_slice()
+            {
+                std::mem::swap(target, gamemode);
+            }
+            SText::translation(key.to_string(), parameters)
+        }
+        _ => SText::system_message(text.0.to_bedrock_legacy(locale)),
+    }
+}
+
 /// Represents a Minecraft player entity.
 ///
 /// A `Player` is a special type of entity that represents a human player connected to the server.
@@ -5195,21 +5219,7 @@ impl Player {
     pub fn send_system_message_raw(&self, text: &TextComponent, overlay: bool) {
         let je_packet = CSystemChatMessage::new(text, overlay);
         let locale = Locale::from_str(&self.config.load().locale).unwrap_or(Locale::EnUs);
-        let be_packet = match &*text.0.content {
-            pumpkin_util::text::TextContent::Translate {
-                translate,
-                bedrock_translate,
-                with,
-            } => {
-                let key = bedrock_translate.as_deref().unwrap_or(translate.as_ref());
-                let parameters = with
-                    .iter()
-                    .map(pumpkin_util::text::TextComponentBase::to_bedrock_string)
-                    .collect();
-                SText::translation(key.to_string(), parameters)
-            }
-            _ => SText::system_message(text.0.to_bedrock_legacy(locale)),
-        };
+        let be_packet = bedrock_system_message(text, locale);
         self.try_enqueue_packet_editioned(&je_packet, &be_packet);
     }
 
@@ -8089,9 +8099,72 @@ impl InventoryPlayer for Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{bedrock_inventory_slot, read_root_vehicle, write_root_vehicle};
+    use super::{
+        bedrock_inventory_slot, bedrock_system_message, read_root_vehicle, write_root_vehicle,
+    };
     use pumpkin_nbt::{compound::NbtCompound, tag::NbtTag};
+    use pumpkin_util::{
+        text::TextComponent,
+        translation::{Locale, get_translation_text},
+    };
     use uuid::Uuid;
+
+    #[test]
+    fn gamemode_feedback_keeps_java_order_and_sends_bedrock_order() {
+        let message = TextComponent::translate_cross(
+            pumpkin_data::translation::java::COMMANDS_GAMEMODE_SUCCESS_OTHER,
+            pumpkin_data::translation::bedrock::COMMANDS_GAMEMODE_SUCCESS_OTHER,
+            [
+                TextComponent::text("iam4pple"),
+                TextComponent::translate_cross("gameMode.creative", "gameMode.creative", []),
+            ],
+        );
+        let packet = bedrock_system_message(&message, Locale::EnUs);
+        assert_eq!(packet.parameters, ["%gameMode.creative", "iam4pple"]);
+        let rendered = get_translation_text(
+            packet.message.into_owned(),
+            Locale::EnUs,
+            packet
+                .parameters
+                .into_iter()
+                .map(|parameter| {
+                    parameter.strip_prefix('%').map_or_else(
+                        || TextComponent::text(parameter.to_string()).0,
+                        |key| TextComponent::translate_cross(key.to_owned(), key.to_owned(), []).0,
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(rendered, "Set iam4pple's game mode to Creative Mode");
+        assert_eq!(
+            message.to_pretty_console(),
+            "Set iam4pple's game mode to Creative Mode"
+        );
+
+        let unrelated = TextComponent::translate_cross(
+            "commands.teleport.success.entity.single",
+            "commands.teleport.success.entity.single",
+            [TextComponent::text("iam4pple"), TextComponent::text("Alex")],
+        );
+        assert_eq!(
+            bedrock_system_message(&unrelated, Locale::EnUs).parameters,
+            ["iam4pple", "Alex"]
+        );
+        for parameters in [vec![], vec![TextComponent::text("iam4pple")]] {
+            let short = TextComponent::translate_cross(
+                pumpkin_data::translation::java::COMMANDS_GAMEMODE_SUCCESS_OTHER,
+                pumpkin_data::translation::bedrock::COMMANDS_GAMEMODE_SUCCESS_OTHER,
+                parameters.clone(),
+            );
+            assert_eq!(
+                bedrock_system_message(&short, Locale::EnUs).parameters,
+                parameters
+                    .into_iter()
+                    .map(TextComponent::get_text)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 
     #[test]
     fn player_screen_slots_map_to_bedrock_inventory() {
