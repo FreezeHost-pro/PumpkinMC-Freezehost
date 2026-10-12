@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use std::path::PathBuf;
 use std::{fs, num::NonZero, path::Path};
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 /// Fun and experimental configuration options.
 pub mod fun;
@@ -278,8 +278,11 @@ pub trait LoadConfiguration {
     /// Creates the directory if it doesn't exist, reads the TOML file,
     /// merges it with defaults, writes missing fields, and validates the result.
     #[must_use]
-    // NOTE: Logger may not be ready.
-    #[expect(clippy::print_stdout)]
+    #[expect(
+        clippy::print_stdout,
+        clippy::print_stderr,
+        reason = "configuration loads before the logger is initialized"
+    )]
     fn load(config_dir: &Path) -> Self
     where
         Self: Sized + Default + Serialize + DeserializeOwned,
@@ -295,8 +298,8 @@ pub trait LoadConfiguration {
             let file_content = match fs::read_to_string(&path) {
                 Ok(content) => content,
                 Err(err) => {
-                    error!(
-                        "Couldn't read configuration file at {}: {err}",
+                    eprintln!(
+                        "Couldn't read configuration file at {}: {err}. Using the default configuration.",
                         path.display()
                     );
                     return Self::default();
@@ -306,8 +309,8 @@ pub trait LoadConfiguration {
             let parsed_toml_value: toml::Value = match toml::from_str(&file_content) {
                 Ok(val) => val,
                 Err(err) => {
-                    error!(
-                        "Couldn't parse TOML at {}. Reason: {err}. Using default config.",
+                    eprintln!(
+                        "Couldn't parse TOML at {}. Reason: {err}. Using the default configuration.",
                         path.display()
                     );
                     return Self::default();
@@ -327,7 +330,7 @@ pub trait LoadConfiguration {
                 match toml::to_string(&merged_config) {
                     Ok(toml_str) => {
                         if let Err(err) = fs::write(&path, toml_str) {
-                            warn!(
+                            eprintln!(
                                 "Couldn't write merged config to {}. Reason: {}",
                                 path.display(),
                                 err
@@ -335,7 +338,7 @@ pub trait LoadConfiguration {
                         }
                     }
                     Err(err) => {
-                        warn!(
+                        eprintln!(
                             "Couldn't serialize merged config for {}. Reason: {}",
                             path.display(),
                             err
@@ -350,16 +353,16 @@ pub trait LoadConfiguration {
             match toml::to_string(&content) {
                 Ok(toml_str) => {
                     if let Err(err) = fs::write(&path, toml_str) {
-                        warn!(
-                            "Couldn't write default config to {:?}. Reason: {}",
+                        eprintln!(
+                            "Couldn't write default config to {}. Reason: {}",
                             path.display(),
                             err
                         );
                     }
                 }
                 Err(err) => {
-                    warn!(
-                        "Couldn't serialize default config for {:?}. Reason: {}",
+                    eprintln!(
+                        "Couldn't serialize default config for {}. Reason: {}",
                         path.display(),
                         err
                     );
@@ -377,6 +380,10 @@ pub trait LoadConfiguration {
     ///
     /// Returns the merged configuration and a flag indicating if any values were filled.
     #[must_use]
+    #[expect(
+        clippy::print_stderr,
+        reason = "configuration loads before the logger is initialized"
+    )]
     fn merge_with_default_toml(parsed_toml: toml::Value) -> (Self, bool)
     where
         Self: Sized + Default + Serialize + DeserializeOwned,
@@ -389,7 +396,12 @@ pub trait LoadConfiguration {
 
         let (merged_value, changed) = Self::merge_toml_values(default_toml_value, parsed_toml);
 
-        let config = merged_value.try_into().unwrap_or_else(|_| Self::default());
+        let config = merged_value.try_into().unwrap_or_else(|err| {
+            eprintln!(
+                "Couldn't deserialize the configuration: {err}. Falling back to the default configuration."
+            );
+            Self::default()
+        });
 
         (config, changed)
     }
@@ -437,9 +449,76 @@ pub trait LoadConfiguration {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, fs, process::Command, time::SystemTime};
+
     use toml::from_str;
 
-    use super::BasicConfiguration;
+    use super::{BasicConfiguration, LoadConfiguration, PumpkinConfig};
+
+    #[test]
+    fn load_reports_errors_without_logger() {
+        const CONFIG_DIR: &str = "PUMPKIN_CONFIG_ERROR_TEST_DIR";
+        if let Some(config_dir) = env::var_os(CONFIG_DIR) {
+            let config = PumpkinConfig::load(std::path::Path::new(&config_dir));
+            assert_eq!(
+                config.basic.default_level_name,
+                env::var("PUMPKIN_CONFIG_ERROR_TEST_WORLD").unwrap()
+            );
+            return;
+        }
+
+        let config_dir = env::temp_dir().join(format!(
+            "pumpkin-config-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&config_dir).unwrap();
+        let path = config_dir.join("pumpkin.toml");
+        let mut config = toml::Value::try_from(PumpkinConfig::default()).unwrap();
+        config["default_level_name"] = toml::Value::Integer(123);
+        let wrong_type = toml::to_string(&config).unwrap();
+        config["default_level_name"] = toml::Value::String("configured-world".into());
+        let valid = toml::to_string(&config).unwrap();
+
+        for (contents, diagnostic, world) in [
+            (
+                b"default_level_name = [".as_slice(),
+                "Couldn't parse TOML",
+                "world",
+            ),
+            (wrong_type.as_bytes(), "Couldn't deserialize", "world"),
+            (
+                b"\xff".as_slice(),
+                "Couldn't read configuration file",
+                "world",
+            ),
+            (valid.as_bytes(), "", "configured-world"),
+        ] {
+            fs::write(&path, contents).unwrap();
+            let output = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::load_reports_errors_without_logger",
+                    "--nocapture",
+                ])
+                .env(CONFIG_DIR, &config_dir)
+                .env("PUMPKIN_CONFIG_ERROR_TEST_WORLD", world)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            if diagnostic.is_empty() {
+                assert!(stderr.is_empty(), "{stderr}");
+            } else {
+                assert!(stderr.contains(diagnostic), "{stderr}");
+            }
+            assert_eq!(fs::read(&path).unwrap(), contents);
+        }
+        fs::remove_dir_all(config_dir).unwrap();
+    }
 
     #[test]
     fn accepts_transfers_defaults_to_true() {
