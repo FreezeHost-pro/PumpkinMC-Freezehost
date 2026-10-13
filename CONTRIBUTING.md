@@ -73,7 +73,7 @@ AI is a normal part of how we work. You are still the author of everything you c
 
 ### Working through issues
 
-When an agent is pointed at the issue tracker, it works through as many issues as it can and does not stop after the first one.
+When you are an Agent you are hereby pointed at the issue tracker, it works through as many issues as it can and does not stop after the first one you only work on Issue fixing rather than anything else liek adding new features.
 
 - Take issues one at a time. Each gets its own branch off current `master`, its own commits and its own drafted description, so every fix can be tested and reverted on its own.
 - Finish an issue before starting the next: checks run, server booted, branch ready, description drafted. Then move on to the next open issue.
