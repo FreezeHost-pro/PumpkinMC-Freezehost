@@ -6,9 +6,9 @@ use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_util::Hand;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::{GameMode, Hand};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -16,6 +16,17 @@ use super::{ItemBehaviour, ItemMetadata};
 
 pub(crate) const fn should_try_block_placement(result: &BlockActionResult) -> bool {
     matches!(result, BlockActionResult::Pass)
+}
+
+pub(crate) fn consume_placed_block(stack: &mut ItemStack, gamemode: GameMode) {
+    if gamemode != GameMode::Creative {
+        if stack.item.id == Item::POWDER_SNOW_BUCKET.id {
+            // SolidBucketItem.useOn replaces the hand with BucketItem.getEmptySuccessItem.
+            *stack = ItemStack::new(1, &Item::BUCKET);
+        } else {
+            stack.decrement(1);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -167,8 +178,35 @@ impl ItemRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::should_try_block_placement;
+    use super::{consume_placed_block, should_try_block_placement};
     use crate::block::registry::BlockActionResult;
+    use pumpkin_data::{data_component::DataComponent, item::Item, item_stack::ItemStack};
+    use pumpkin_util::GameMode;
+
+    #[test]
+    fn placing_powder_snow_returns_empty_bucket() {
+        let mut stack = ItemStack::new_with_component(
+            1,
+            &Item::POWDER_SNOW_BUCKET,
+            vec![(DataComponent::CustomName, None)],
+        );
+        let creative_stack = stack.clone();
+        consume_placed_block(&mut stack, GameMode::Survival);
+        assert_eq!(stack.item.id, Item::BUCKET.id);
+        assert_eq!(stack.item_count, 1);
+        assert!(stack.patch.is_empty());
+        assert!(!stack.is_empty());
+
+        let mut stack = creative_stack.clone();
+        consume_placed_block(&mut stack, GameMode::Creative);
+        assert!(stack.are_equal(&creative_stack));
+        assert_eq!(stack.uid, creative_stack.uid);
+
+        let mut stack = ItemStack::new(2, &Item::STONE);
+        consume_placed_block(&mut stack, GameMode::Survival);
+        assert_eq!(stack.item.id, Item::STONE.id);
+        assert_eq!(stack.item_count, 1);
+    }
 
     #[test]
     fn block_placement_only_follows_pass() {

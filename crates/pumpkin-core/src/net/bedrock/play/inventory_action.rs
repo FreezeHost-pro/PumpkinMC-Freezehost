@@ -1,6 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::item::registry::should_try_block_placement;
+use crate::item::registry::{consume_placed_block, should_try_block_placement};
 use pumpkin_protocol::bedrock::server::inventory_transaction::HandSlot;
 
 impl BedrockClient {
@@ -284,9 +284,8 @@ impl BedrockClient {
                                     &dummy_use_item_on,
                                     data.block_position,
                                     face,
-                                ) && player.gamemode.load() != GameMode::Creative
-                                {
-                                    stack.decrement(1);
+                                ) {
+                                    consume_placed_block(&mut stack, player.gamemode.load());
                                 }
                             }
                         }
