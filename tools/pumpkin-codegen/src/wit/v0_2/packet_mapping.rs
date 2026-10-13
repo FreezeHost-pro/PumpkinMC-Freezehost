@@ -25,7 +25,8 @@ pub fn build_java_mapping() -> String {
     output.push_str("    match packet {\n");
 
     let client_states = &["config", "login", "play", "status"];
-    let server_states = &["config", "handshake", "login", "play", "status"];
+    // PacketReceivedEvent is fired in play, where packet IDs must be decoded against play packets only.
+    let play_states = &["play"];
 
     for state in client_states {
         process_packets(
@@ -45,10 +46,10 @@ pub fn build_java_mapping() -> String {
     output.push_str("}\n\n");
 
     output.push_str("#[must_use]\n");
-    output.push_str("pub fn deserialize_java_serverbound_packet(id: i32, mut payload: &[u8], version: JavaMinecraftVersion) -> Option<ServerboundPacket> {\n");
+    output.push_str("pub fn deserialize_java_play_serverbound_packet(id: i32, mut payload: &[u8], version: JavaMinecraftVersion) -> Option<ServerboundPacket> {\n");
     output.push_str("    match id {\n");
 
-    for state in server_states {
+    for state in play_states {
         process_packets(
             &format!("../../crates/pumpkin-protocol/src/java/server/{}", state),
             state,
@@ -299,7 +300,10 @@ fn convert_value(
                     src
                 )
             }
-            MappingMode::Deserialize | MappingMode::ToWit => {
+            MappingMode::Deserialize => {
+                format!("{}.0.try_into().ok()?", src)
+            }
+            MappingMode::ToWit => {
                 format!("{}.0.try_into().unwrap()", src)
             }
             MappingMode::Downcast => String::new(),
@@ -339,7 +343,7 @@ fn convert_value(
                 if is_slice {
                     format!("{}.iter().map(|v| v.0 as _).collect()", src)
                 } else {
-                    format!("{}.0.try_into().unwrap()", src)
+                    format!("{}.0.try_into().ok()?", src)
                 }
             } else {
                 // ToWit
@@ -519,7 +523,20 @@ fn convert_value(
                     }
                 }
             }
-            MappingMode::Deserialize | MappingMode::ToWit => {
+            MappingMode::Deserialize => {
+                if is_slice {
+                    if type_ident == "VarInt" {
+                        format!("{}.iter().map(|v| v.0 as _).collect()", src)
+                    } else {
+                        format!("{}.iter().map(|v| *v as _).collect()", src)
+                    }
+                } else if type_ident == "VarInt" {
+                    format!("{}.0.try_into().ok()?", src)
+                } else {
+                    format!("{}.try_into().ok()?", src)
+                }
+            }
+            MappingMode::ToWit => {
                 if is_slice {
                     if type_ident == "VarInt" {
                         format!("{}.iter().map(|v| v.0 as _).collect()", src)

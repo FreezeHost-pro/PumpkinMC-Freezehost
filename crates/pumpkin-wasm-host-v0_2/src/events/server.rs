@@ -30,7 +30,7 @@ impl ToFromWasmEvent for PacketReceivedEvent {
         let packet = match self.player.client.as_ref() {
             // Typed view is 26.3
             // for older clients only valid after the multiversion plugin ran.
-            ClientPlatform::Java(_) => generated_packets::deserialize_java_serverbound_packet(
+            ClientPlatform::Java(_) => generated_packets::deserialize_java_play_serverbound_packet(
                 self.packet_id,
                 &self.payload,
                 pumpkin_data::packet::CURRENT_MC_VERSION,
